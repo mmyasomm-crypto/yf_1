@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <!-- R20: Content-Security-Policy. script-src is strict (self + the MediaPipe CDN used only when the model is not
+         bundled in ./vendor/mediapipe); inline onclick="" attributes are allowed through script-src-attr only.
+         connect-src: this origin, the HTTPS API host of packaged builds (stamped from native_api_base in version.json by
+         scripts/sync_version.py - the same host as NATIVE_API_BASE / config.xml; none while it is unset)
+         and the model CDNs (jsDelivr, Google storage, and Hugging Face: its downloads redirect to *.hf.co / *.aws.cdn.hf.co
+         hosts, and CSP is re-checked on every redirect hop). Keep the stamped hosts BEFORE https://cdn.jsdelivr.net and any
+         extra hosts AFTER it - scripts/sync_version.py rewrites only the region in between. A dev override like
+         ?api=http://192.168.x.x needs that origin added here. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; script-src-attr 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; worker-src 'self' blob:; connect-src 'self' blob: data: https://cdn.jsdelivr.net https://storage.googleapis.com https://*.aws.cdn.hf.co https://*.huggingface.co https://*.hf.co; object-src 'none'; base-uri 'self'; form-action 'self'">
+    <!-- Force native resolution on Retina/HiDPI screens -->
+    <meta name="theme-color" content="#0f0f12">
+    <meta name="HandheldFriendly" content="true">
+    <meta name="MobileOptimized" content="width">
+    <title>YoFilter - AI Photo Studio</title>
+    <link rel="icon" type="image/x-icon" href="./favicon.ico">
+    <!-- Self-hosted fonts (see css/base.css @font-face). Only the primary Latin face is preloaded;
+         the Arabic subset is fetched on demand via unicode-range when Arabic text is rendered. -->
+    <link rel="preload" href="./fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+    <!-- V28: the splash logo is the real app icon; preloaded so it is decoded by the time the splash animates in. -->
+    <link rel="preload" href="./icon.png" as="image">
+
+    <!-- V28: critical splash CSS, inlined so the launch screen is fully styled on first paint with no dependency on
+         variables.css / base.css / components.css. It is the ONLY place splash styles live (components.css no longer has
+         any). Backdrop #0f0f12 = --bg-primary (the tokens are not parsed yet at this point, hence the literal).
+         Rules: transform + opacity only (compositor-friendly on low-spec GPUs), no blur/filter/backdrop-filter, no
+         infinite animation outliving the splash (the node is removed on exit). Lifecycle: js/ui/splash.js. -->
+    <style id="splashCritical">
+        .splash-screen { position: fixed; inset: 0; z-index: 5000; display: flex; align-items: center; justify-content: center; background: #0f0f12; color: #ededf1; font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; touch-action: none; -webkit-tap-highlight-color: transparent; will-change: opacity; animation: ys-failsafe 0s linear 10s forwards; }
+        .ys-stage { display: flex; flex-direction: column; align-items: center; text-align: center; will-change: transform; transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+        .intro-container { position: relative; width: 200px; height: 200px; display: flex; align-items: center; justify-content: center; }
+        .glow-effect { position: absolute; top: 50%; left: 50%; width: 240px; height: 240px; margin: -120px 0 0 -120px; border-radius: 50%; background: radial-gradient(circle, rgba(110, 200, 235, 0.34) 0%, rgba(140, 120, 245, 0.14) 38%, transparent 68%); opacity: 0; animation: ys-glow-in 0.8s ease-out forwards, ys-pulse 2.4s ease-in-out 0.8s infinite; }
+        /* The logo is icon.png itself. The PNG is a full square with the squircle painted inside it, so the box clips it to the same
+           ~22% corner radius; the navy fill only guards against a blank box if the image decodes a frame late. */
+        .monogram { position: relative; width: 112px; height: 112px; border-radius: 22%; overflow: hidden; background: #0a1020; box-shadow: 0 12px 44px rgba(110, 160, 240, 0.30); opacity: 0; transform: scale(0.86); animation: ys-pop 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.05s forwards; }
+        .monogram img { display: block; width: 100%; height: 100%; object-fit: cover; -webkit-user-drag: none; user-select: none; }
+        .ys-wordmark { margin-top: 4px; font-size: 28px; font-weight: 700; line-height: 1.1; letter-spacing: 0.02em; direction: ltr; opacity: 0; transform: translateY(8px); animation: ys-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.35s forwards; }
+        .ys-tagline { margin: 10px 0 0; font-size: 13px; font-weight: 500; line-height: 1.3; letter-spacing: 0.14em; text-transform: uppercase; color: #8c8c9a; opacity: 0; transform: translateY(8px); }
+        /* The tagline fades in only once the language is applied (js/ui/splash.js adds .ys-text-in), so Arabic users never see English flash. */
+        .splash-screen.ys-text-in .ys-tagline { animation: ys-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.1s forwards; }
+        /* Developer credit: deliberately quiet, last to appear; fully visible (0.75 s delay + 0.7 s) before the 1.5 s floor ends. */
+        .ys-credit { margin: 30px 0 0; font-size: 11px; font-weight: 500; line-height: 1.3; letter-spacing: 0.12em; color: #7a7a88; direction: ltr; opacity: 0; transform: translateY(6px); animation: ys-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.75s forwards; }
+        .ys-credit span { font-weight: 600; color: #9d9dac; }
+        /* Exit: fade out + scale up into the app shell. pointer-events:none from the first frame, so touches are never blocked. */
+        .splash-screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.55s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.55s; }
+        .splash-screen.hidden .ys-stage { transform: scale(1.28); }
+        @keyframes ys-pop { from { opacity: 0; transform: scale(0.86); } to { opacity: 1; transform: scale(1); } }
+        @keyframes ys-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        @keyframes ys-glow-in { from { opacity: 0; transform: scale(0.6); } to { opacity: 0.75; transform: scale(1); } }
+        @keyframes ys-pulse { 0%, 100% { opacity: 0.75; transform: scale(1); } 50% { opacity: 1; transform: scale(1.12); } }
+        /* Last-resort guard: if the script never dismisses the splash (JS failed to load), it can not trap the app forever. */
+        @keyframes ys-failsafe { to { opacity: 0; visibility: hidden; pointer-events: none; } }
+        @media (prefers-reduced-motion: reduce) {
+            .ys-stage { transition: none; }
+            .monogram { transform: none; animation: ys-fade 0.25s ease-out forwards; }
+            .ys-wordmark { transform: none; animation: ys-fade 0.25s ease-out 0.1s forwards; }
+            .ys-tagline { transform: none; }
+            .ys-credit { transform: none; animation: ys-fade 0.25s ease-out 0.3s forwards; }
+            .splash-screen.ys-text-in .ys-tagline { animation: ys-fade 0.25s ease-out forwards; }
+            .glow-effect { animation: ys-fade-glow 0.25s ease-out forwards; }
+            .splash-screen.hidden { transition: opacity 0.25s linear, visibility 0s linear 0.25s; }
+            .splash-screen.hidden .ys-stage { transform: none; }
+            @keyframes ys-fade { to { opacity: 1; } }
+            @keyframes ys-fade-glow { to { opacity: 0.75; } }
+        }
+    </style>
+
+    <!-- ===== Stylesheets ===== -->
+    <link rel="stylesheet" href="./css/button-reset.css">
+    <link rel="stylesheet" href="./css/variables.css">
+    <link rel="stylesheet" href="./css/base.css">
+    <link rel="stylesheet" href="./css/components.css">
+    <link rel="stylesheet" href="./css/glass.css">
+    <link rel="stylesheet" href="./css/portrait.css">
+    <link rel="stylesheet" href="./css/mask.css">
+    <link rel="stylesheet" href="./css/magic-eraser.css">
+    <link rel="stylesheet" href="./css/panels.css">
+    <link rel="stylesheet" href="./css/responsive.css">
+    <link rel="stylesheet" href="./css/mobile.css">
+    <link rel="stylesheet" href="./css/polish.css">
+    <link rel="stylesheet" href="./css/settings.css">
+    <link rel="stylesheet" href="./css/touch-layout.css">
+    <link rel="stylesheet" href="./css/a11y.css">
+    <link rel="stylesheet" href="./css/edge-ai.css">
+    <link rel="stylesheet" href="./css/loading-orb.css">
+    <link rel="stylesheet" href="./css/geometry.css">
+    <!-- RTL / Arabic layout overrides — must load last -->
+    <link rel="stylesheet" href="./css/rtl.css">
+</head>
+<body>
+
+
+<!-- V28: launch splash (styles: inline #splashCritical in <head>; lifecycle: js/ui/splash.js). Decorative, so hidden from
+     assistive tech. The logo is the real app icon (./icon.png, the same file config.xml uses). The tagline is translated
+     through i18n (data-i18n="splashTagline"); the brand name and the developer credit stay Latin in both languages. -->
+<div class="splash-screen" id="splashScreen" aria-hidden="true">
+    <div class="ys-stage">
+        <div class="intro-container">
+            <div class="glow-effect"></div>
+            <div class="monogram" id="monogram">
+                <img src="./icon.png" width="512" height="512" alt="" decoding="async" draggable="false">
+            </div>
+        </div>
+        <div class="ys-wordmark">YoFilter</div>
+        <p class="ys-tagline" data-i18n="splashTagline">AI Photo Studio</p>
+        <p class="ys-credit" dir="ltr">develop by <span>YASSEN MOHAMMED</span></p>
+    </div>
+</div>
+
+<div class="swipe-hint" id="swipeHint"></div>
+
+<input type="file" id="fileInput" accept="image/*" onchange="handleFileSelect(event)">
+<canvas id="hiddenCanvas"></canvas>
+<canvas id="previewCanvas"></canvas>
+
+<div class="app">
+    <header class="top-bar">
+        <div class="top-actions top-actions-left">
+            <label for="fileInput" class="top-btn" id="newPhotoBtn" style="cursor:pointer;" data-i18n-title="newPhoto">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span data-i18n="newPhoto">New Photo</span>
+            </label>
+        </div>
+        <div class="top-title">YoFilter</div>
+        <div class="top-actions top-actions-right">
+            <button class="top-btn primary" onclick="openExportModal()" id="exportBtn" style="display:none;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                <span data-i18n="save">Save</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="viewport" id="viewport">
+        <div class="portrait-canvas-loader" id="portraitCanvasLoader" role="status" aria-live="polite" aria-hidden="true">
+            <div class="yo-orb yo-orb--sm" aria-hidden="true">
+                <span class="yo-orb__halo"></span>
+                <span class="yo-orb__orbit"></span>
+                <svg class="yo-orb__svg" viewBox="0 0 120 120" focusable="false">
+                    <circle class="yo-orb__track" cx="60" cy="60" r="52"/>
+                    <circle class="yo-orb__arc" id="portraitArc" cx="60" cy="60" r="52"/>
+                </svg>
+                <span class="yo-orb__count" dir="ltr"><span id="portraitPercent">1</span><span class="yo-orb__pct">%</span></span>
+            </div>
+            <div class="portrait-canvas-loader__text" id="portraitLoaderText" data-i18n="processingPortrait">Processing portrait…</div>
+        </div>
+        <!-- Portrait side toolbar: dedicated "Set Focus" tool (visible only on the Portrait tab with a photo loaded) -->
+        <aside class="portrait-side-rail" id="portraitSideRail" data-i18n-aria="ariaPortraitTools" aria-label="Portrait tools" hidden>
+            <button type="button" class="psr-btn" id="portrait-set-focus" aria-pressed="false" onclick="togglePortraitFocusMode()" title="Set Focus" aria-label="Set Focus" data-i18n-title="setFocus" data-i18n-aria="setFocus">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><path d="M12 1.5v5M12 17.5v5M1.5 12h5M17.5 12h5"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+                <span class="psr-label" data-i18n="setFocus">Set Focus</span>
+            </button>
+        </aside>
+        <div class="image-container" id="imgContainer">
+            <label for="fileInput" class="upload-box" id="uploadBox" style="cursor:pointer;">
+                <span class="icon"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></span>
+                <p id="lang-placeholder" data-i18n="tapToSelect">Tap to choose a photo</p>
+                <span class="sub-text" data-i18n="supportsFormats">JPG, PNG or WebP</span>
+            </label>
+            <img class="main-img" id="mainImg" src="" alt="Photo being edited" data-i18n-alt="altMainImage" draggable="false">
+            <canvas class="overlay-canvas" id="overlayCanvas" style="display:none;"></canvas>
+            <!-- Magic Eraser paint layer: pinned to the rendered photo area of #mainImg (clips strokes to the photo) -->
+            <canvas class="me-paint-layer" id="me-paint-layer" aria-hidden="true"></canvas>
+            <div class="me-brush-cursor" id="me-cursor" aria-hidden="true"></div>
+            <div class="crop-overlay" id="cropOverlay">
+                <div class="crop-rect" id="cropRect" data-i18n-aria="ariaCropBox" aria-label="Crop area">
+                    <div class="crop-handle nw" id="cropHandleNW" aria-hidden="true"></div>
+                    <div class="crop-handle ne" id="cropHandleNE" aria-hidden="true"></div>
+                    <div class="crop-handle sw" id="cropHandleSW" aria-hidden="true"></div>
+                    <div class="crop-handle se" id="cropHandleSE" aria-hidden="true"></div>
+                </div>
+                <div class="crop-actions" id="cropActions" role="group">
+                    <button type="button" class="crop-btn" id="cropApplyBtn" onclick="applyCropSelection()">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="btn-ico" aria-hidden="true"><path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/></svg>
+                        <span data-i18n="apply">Apply</span>
+                    </button>
+                    <button type="button" class="crop-btn cancel" onclick="cancelCrop()">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="btn-ico" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        <span data-i18n="cancel">Cancel</span>
+                    </button>
+                </div>
+            </div>
+            <div class="loading-overlay" id="loadingOverlay" role="status" aria-live="polite" data-i18n-aria="ariaLoading" aria-label="Working, please wait">
+                <!-- 1 -> 100 counter orb: shown instead of the spinner only when showLoading(text, { progress }) asks for it
+                     (js/ui/loading-toast.js + js/ui/progress-counter.js). Decorative: the status text below is what is announced. -->
+                <div class="yo-orb" id="loadingOrb" aria-hidden="true" hidden>
+                    <span class="yo-orb__halo"></span>
+                    <span class="yo-orb__orbit"></span>
+                    <span class="yo-orb__glow"></span>
+                    <svg class="yo-orb__svg" viewBox="0 0 120 120" focusable="false">
+                        <circle class="yo-orb__track" cx="60" cy="60" r="52"/>
+                        <circle class="yo-orb__arc" id="loadingArc" cx="60" cy="60" r="52"/>
+                    </svg>
+                    <span class="yo-orb__count" dir="ltr"><span id="loadingPercent">1</span><span class="yo-orb__pct">%</span></span>
+                </div>
+                <div class="spinner" id="loadingSpinner"></div>
+                <div class="loading-text" id="loadingText" data-i18n="processing">Processing…</div>
+                <div class="loading-sub" id="loadingSub"></div>
+                <div class="progress-bar" id="progressBar" style="display:none;">
+                    <div class="fill" id="progressFill"></div>
+                </div>
+                <button type="button" class="island-cancel" id="loadingCancel" hidden data-i18n="cancel">Cancel</button>
+            </div>
+        </div>
+        <img class="compare-img" id="compareImg" src="" alt="Original photo, before edits" data-i18n-alt="altOriginalImage" draggable="false">
+        <!-- Floating thumb-zone controls (bottom-left of the canvas): Undo + press-and-hold Original -->
+        <div class="canvas-float" id="canvasFloat">
+            <button type="button" class="float-btn float-undo" onclick="undoEdit()" id="undoBtn" disabled aria-label="Undo" title="Undo" data-i18n-aria="undo" data-i18n-title="undo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+                <span class="sr-only" data-i18n="undo">Undo</span>
+            </button>
+            <button type="button" class="compare-btn" id="compareBtn" aria-pressed="false" aria-label="Hold to see the original" title="Hold to see the original" data-i18n-aria="ariaHoldOriginal" data-i18n-title="ariaHoldOriginal">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <span data-i18n="original">Original</span>
+            </button>
+        </div>
+    </main>
+
+    <section class="control-panel">
+        <div class="sub-menu-bar" id="editSubMenu" role="group" data-i18n-aria="ariaEditTools" aria-label="Edit tools">
+            <button class="sub-btn active" onclick="switchSubTab('p-presets', this)" data-i18n="filters">Filters</button>
+            <button class="sub-btn" onclick="switchSubTab('p-light', this)" data-i18n="light">Light</button>
+            <button class="sub-btn" onclick="switchSubTab('p-color', this)" data-i18n="color">Color</button>
+            <button class="sub-btn" onclick="switchSubTab('p-mix', this)" data-i18n="mix">Mix</button>
+            <button class="sub-btn" onclick="switchSubTab('p-curves', this)" data-i18n="curves">Curves</button>
+            <button class="sub-btn" onclick="switchSubTab('p-details', this)" data-i18n="detail">Detail</button>
+            <button class="sub-btn" onclick="switchSubTab('p-crop', this)" data-i18n="crop">Crop</button>
+        </div>
+        <div class="sub-menu-bar" id="toolsSubMenu" style="display:none;" role="group" data-i18n-aria="ariaAiTools" aria-label="AI tools">
+            <button class="sub-btn active" onclick="switchSubTab('p-eraser', this)" data-i18n="eraser">Eraser</button>
+            <button class="sub-btn" onclick="switchSubTab('p-mask', this)" data-i18n="aiMask">AI Mask</button>
+            <button class="sub-btn" onclick="switchSubTab('p-portrait', this)" data-i18n="portrait">Portrait</button>
+            <button class="sub-btn" onclick="switchSubTab('p-enhance-face', this)" data-i18n="enhanceFace">Enhance Face</button>
+            <button class="sub-btn" onclick="switchSubTab('p-auto-enhance', this)" data-i18n="autoEnhance">Auto Enhance</button>
+        </div>
+
+        <div class="panel-content">
+            <!-- ── Presets / Filters ── -->
+            <div class="tab-section active" id="p-presets">
+                <div class="presets-grid" id="presetsGrid" role="group" data-i18n-aria="ariaFilterGrid" aria-label="Filters"></div>
+            </div>
+
+            <!-- ── Light ── -->
+            <div class="tab-section" id="p-light">
+                <div class="tools-list">
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="brightness">Brightness</span><span class="tool-value" id="v-bright">0</span></div><button class="tool-btn" onclick="adjustSlider('bright', -1)">−</button><input type="range" class="tool-slider" id="bright" min="-100" max="100" value="0" oninput="onSliderChange('bright')"><button class="tool-btn" onclick="adjustSlider('bright', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="contrast">Contrast</span><span class="tool-value" id="v-contrast">0</span></div><button class="tool-btn" onclick="adjustSlider('contrast', -1)">−</button><input type="range" class="tool-slider" id="contrast" min="-100" max="100" value="0" oninput="onSliderChange('contrast')"><button class="tool-btn" onclick="adjustSlider('contrast', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="exposure">Exposure</span><span class="tool-value" id="v-exposure">0</span></div><button class="tool-btn" onclick="adjustSlider('exposure', -1)">−</button><input type="range" class="tool-slider" id="exposure" min="-100" max="100" value="0" oninput="onSliderChange('exposure')"><button class="tool-btn" onclick="adjustSlider('exposure', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="shadows">Shadows</span><span class="tool-value" id="v-shadows">0</span></div><button class="tool-btn" onclick="adjustSlider('shadows', -1)">−</button><input type="range" class="tool-slider" id="shadows" min="-100" max="100" value="0" oninput="onSliderChange('shadows')"><button class="tool-btn" onclick="adjustSlider('shadows', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="whites">Whites</span><span class="tool-value" id="v-whites">0</span></div><button class="tool-btn" onclick="adjustSlider('whites', -1)">−</button><input type="range" class="tool-slider" id="whites" min="-100" max="100" value="0" oninput="onSliderChange('whites')"><button class="tool-btn" onclick="adjustSlider('whites', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="blacks">Blacks</span><span class="tool-value" id="v-blacks">0</span></div><button class="tool-btn" onclick="adjustSlider('blacks', -1)">−</button><input type="range" class="tool-slider" id="blacks" min="-100" max="100" value="0" oninput="onSliderChange('blacks')"><button class="tool-btn" onclick="adjustSlider('blacks', 1)">+</button></div>
+                </div>
+            </div>
+
+            <!-- ── Color ── -->
+            <div class="tab-section" id="p-color">
+                <div class="tools-list">
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="saturation">Saturation</span><span class="tool-value" id="v-sat">0</span></div><button class="tool-btn" onclick="adjustSlider('sat', -1)">−</button><input type="range" class="tool-slider" id="sat" min="-100" max="100" value="0" oninput="onSliderChange('sat')"><button class="tool-btn" onclick="adjustSlider('sat', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="vibrance">Vibrance</span><span class="tool-value" id="v-vibrance">0</span></div><button class="tool-btn" onclick="adjustSlider('vibrance', -1)">−</button><input type="range" class="tool-slider" id="vibrance" min="-100" max="100" value="0" oninput="onSliderChange('vibrance')"><button class="tool-btn" onclick="adjustSlider('vibrance', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="warmth">Warmth</span><span class="tool-value" id="v-warmth">0</span></div><button class="tool-btn" onclick="adjustSlider('warmth', -1)">−</button><input type="range" class="tool-slider" id="warmth" min="-100" max="100" value="0" oninput="onSliderChange('warmth')"><button class="tool-btn" onclick="adjustSlider('warmth', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="tint">Tint</span><span class="tool-value" id="v-tint">0</span></div><button class="tool-btn" onclick="adjustSlider('tint', -1)">−</button><input type="range" class="tool-slider" id="tint" min="-100" max="100" value="0" oninput="onSliderChange('tint')"><button class="tool-btn" onclick="adjustSlider('tint', 1)">+</button></div>
+                </div>
+            </div>
+
+            <!-- ── Mix ── -->
+            <div class="tab-section" id="p-mix">
+                <div class="color-mix-container">
+                    <div class="color-circles" id="mixCircles" role="group" data-i18n-aria="ariaMixColors" aria-label="Color to adjust"></div>
+                    <div class="tools-list" style="margin-top: 6px;">
+                        <div class="tool-row"><div class="tool-meta"><span data-i18n="hue">Hue</span><span class="tool-value" id="v-hue">0</span></div><button class="tool-btn" onclick="adjustColorMix('hue', -1)">−</button><input type="range" class="tool-slider" id="mix-hue" min="-100" max="100" value="0" oninput="onColorMixChange()"><button class="tool-btn" onclick="adjustColorMix('hue', 1)">+</button></div>
+                        <div class="tool-row"><div class="tool-meta"><span data-i18n="sat">Sat</span><span class="tool-value" id="v-sat-mix">0</span></div><button class="tool-btn" onclick="adjustColorMix('sat', -1)">−</button><input type="range" class="tool-slider" id="mix-sat" min="-100" max="100" value="0" oninput="onColorMixChange()"><button class="tool-btn" onclick="adjustColorMix('sat', 1)">+</button></div>
+                        <div class="tool-row"><div class="tool-meta"><span data-i18n="luma">Luma</span><span class="tool-value" id="v-lum">0</span></div><button class="tool-btn" onclick="adjustColorMix('lum', -1)">−</button><input type="range" class="tool-slider" id="mix-lum" min="-100" max="100" value="0" oninput="onColorMixChange()"><button class="tool-btn" onclick="adjustColorMix('lum', 1)">+</button></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Curves ── -->
+            <div class="tab-section" id="p-curves">
+                <div class="curves-container">
+                    <div class="curve-channels">
+                        <button class="channel-btn active" onclick="switchCurveChannel('rgb', this)">RGB</button>
+                        <button class="channel-btn ch-red" onclick="switchCurveChannel('red', this)" data-i18n="curveRed">Red</button>
+                        <button class="channel-btn ch-green" onclick="switchCurveChannel('green', this)" data-i18n="curveGreen">Green</button>
+                        <button class="channel-btn ch-blue" onclick="switchCurveChannel('blue', this)" data-i18n="curveBlue">Blue</button>
+                        <button class="curve-reset-btn" type="button" onclick="resetCurves()" data-i18n="curveReset" data-i18n-title="curveResetAria" title="Reset this curve">Reset</button>
+                    </div>
+                    <canvas class="curves-svg" id="curvesCanvas" width="320" height="180" role="img" data-i18n-aria="ariaCurvesCanvas" aria-label="Tone curve editor"></canvas>
+                    <p class="curves-hint" data-i18n="curvesHint">Drag points to adjust tones</p>
+                </div>
+            </div>
+
+            <!-- ── Detail ── -->
+            <div class="tab-section" id="p-details">
+                <div class="tools-list">
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="sharpness">Sharpness</span><span class="tool-value" id="v-sharp">0</span></div><button class="tool-btn" onclick="adjustSlider('sharp', -1)">−</button><input type="range" class="tool-slider" id="sharp" min="0" max="100" value="0" oninput="onSliderChange('sharp')"><button class="tool-btn" onclick="adjustSlider('sharp', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="clarity">Clarity</span><span class="tool-value" id="v-clarity">0</span></div><button class="tool-btn" onclick="adjustSlider('clarity', -1)">−</button><input type="range" class="tool-slider" id="clarity" min="0" max="100" value="0" oninput="onSliderChange('clarity')"><button class="tool-btn" onclick="adjustSlider('clarity', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="vignette">Vignette</span><span class="tool-value" id="v-vignette">0</span></div><button class="tool-btn" onclick="adjustSlider('vignette', -1)">−</button><input type="range" class="tool-slider" id="vignette" min="-100" max="100" value="0" oninput="onSliderChange('vignette')"><button class="tool-btn" onclick="adjustSlider('vignette', 1)">+</button></div>
+                    <div class="tool-row"><div class="tool-meta"><span data-i18n="grain">Grain</span><span class="tool-value" id="v-grain">0</span></div><button class="tool-btn" onclick="adjustSlider('grain', -1)">−</button><input type="range" class="tool-slider" id="grain" min="0" max="100" value="0" oninput="onSliderChange('grain')"><button class="tool-btn" onclick="adjustSlider('grain', 1)">+</button></div>
+                </div>
+            </div>
+
+            <!-- ── Crop ── -->
+            <div class="tab-section" id="p-crop">
+                <div class="options-row" role="group" data-i18n-aria="ariaCropRatios" aria-label="Crop aspect ratio">
+                    <button type="button" class="opt-box active" aria-pressed="true" onclick="activateCropMode('free', this)" data-i18n="free">Free</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('1-1', this)">1:1</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('4-5', this)">4:5</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('16-9', this)">16:9</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('9-16', this)">9:16</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('4-3', this)">4:3</button>
+                    <button type="button" class="opt-box" aria-pressed="false" onclick="activateCropMode('3-4', this)">3:4</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-muted);margin-top:10px;text-align:center;" data-i18n="cropHint">Choose “Free”, then drag on the photo to crop</p>
+            </div>
+
+            <!-- ── Portrait Mode ── -->
+            <div class="tab-section" id="p-portrait">
+                <div id="portrait-panel-content">
+                    <div class="tools-list" id="portrait-blur-controls" style="margin-top:10px;">
+                        <div class="tool-row">
+                            <div class="tool-meta"><span data-i18n="blurAmount">Blur Amount</span><span class="tool-value" id="v-portrait-blur">1</span></div>
+                            <button class="tool-btn" onclick="adjustPortraitBlur(-1)">-</button>
+                            <input type="range" class="tool-slider" id="portrait-blur-slider" min="1" max="30" value="1" oninput="onPortraitBlurInput()" onchange="onPortraitBlurChange()">
+                            <button class="tool-btn" onclick="adjustPortraitBlur(1)">+</button>
+                        </div>
+                        <div class="tool-row">
+                            <div class="tool-meta"><span data-i18n="skinSmoothing">Skin Smoothing</span><span class="tool-value" id="v-portrait-skin">0</span></div>
+                            <button class="tool-btn" onclick="adjustPortraitSkin(-5)">-</button>
+                            <input type="range" class="tool-slider" id="portrait-skin-slider" min="0" max="100" value="0" oninput="onPortraitSkinInput()" onchange="onPortraitSkinChange()">
+                            <button class="tool-btn" onclick="adjustPortraitSkin(5)">+</button>
+                        </div>
+                    </div>
+                    <div class="ai-section" id="portrait-init-section">
+                        <h3 style="font-size:13px;font-weight:600;margin-bottom:8px;" data-i18n="portraitMode">Portrait Mode</h3>
+                        <p class="ai-desc" data-i18n="portraitDesc">Softly blur the background and keep your subject in sharp focus.</p>
+                        <button class="ai-btn" id="portraitApplyBtn" onclick="applyPortraitMode()" style="margin-top:8px;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-ico btn-ico-lg" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                            <span data-i18n="apply">Apply</span>
+                        </button>
+                    </div>
+                    <div id="portrait-result-section" style="display:none;">
+                        <div class="studio-btn-row" style="margin-top:12px;justify-content:center;">
+                            <button class="studio-btn primary" onclick="downloadPortraitResult()">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="btn-ico" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                <span data-i18n="saveResult">Save Result</span>
+                            </button>
+                            <button class="studio-btn" onclick="reapplyPortraitMode()">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-ico" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                                <span data-i18n="reapply">Reapply</span>
+                            </button>
+                            <button class="studio-btn danger" onclick="resetPortraitMode()">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="btn-ico" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                <span data-i18n="cancel">Cancel</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="portrait-error-section" style="display:none;text-align:center;padding:16px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);border-radius:10px;margin-top:10px;">
+                        <p style="font-size:13px;color:var(--danger);font-weight:600;" data-i18n="portraitFailed">Couldn’t create the portrait. Please try again.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Enhance Face ── -->
+            <div class="tab-section" id="p-enhance-face" style="display:none;">
+                <div class="ai-section">
+                    <h3 style="font-size:13px;font-weight:600;margin-bottom:8px;" data-i18n="enhanceFaceTitle">Enhance Face</h3>
+                    <p class="ai-desc" data-i18n="enhanceFaceDesc">Refine skin, detail, tone and sharpness — all on your device.</p>
+                    <button class="ai-btn" onclick="window.PortraitEnhance.apply()" style="margin-top:8px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-ico btn-ico-lg" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+                        <span data-i18n="apply">Apply</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ── Auto Enhance ── -->
+            <div class="tab-section" id="p-auto-enhance" style="display:none;">
+                <div class="ai-section">
+                    <h3 style="font-size:13px;font-weight:600;margin-bottom:8px;" data-i18n="autoEnhanceTitle">Auto Enhance</h3>
+                    <p class="ai-desc" data-i18n="autoEnhanceDesc">Analyze your photo and fine-tune brightness, contrast, color and sharpness in one tap.</p>
+                    <button class="ai-btn" onclick="applyAutoEnhance()" style="margin-top:8px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-ico btn-ico-lg" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7" x2="12" y2="17"/><line x1="7" y1="12" x2="17" y2="12"/></svg>
+                        <span data-i18n="apply">Apply</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ── AI Mask ── -->
+            <div class="tab-section" id="p-mask" style="display:none;">
+                <div class="mask-panel">
+                    <div class="mask-header">
+                        <div class="mask-title"><span class="dot"></span> <span data-i18n="aiMaskTitle">AI Mask</span></div>
+                        <div class="mask-hint" data-i18n="aiMaskHint">Edit one region at a time</div>
+                    </div>
+                    <button class="mask-auto-btn" id="mask-auto-btn" onclick="applyMaskAutoAI()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
+                        <span data-i18n="aiMaskAutoBtn">Auto-Enhance All Regions</span>
+                    </button>
+                    <div class="mask-chips" role="group" data-i18n-aria="ariaMaskRegions" aria-label="Region to adjust">
+                        <button type="button" class="mask-chip" aria-pressed="false" onclick="selectMaskRegion('sky', this)">
+                            <span class="chip-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></span>
+                            <span class="chip-label" data-i18n="sky">Sky</span>
+                        </button>
+                        <button type="button" class="mask-chip" aria-pressed="false" onclick="selectMaskRegion('person', this)">
+                            <span class="chip-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+                            <span class="chip-label" data-i18n="person">Person</span>
+                        </button>
+                        <button type="button" class="mask-chip" aria-pressed="false" onclick="selectMaskRegion('background', this)">
+                            <span class="chip-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></span>
+                            <span class="chip-label" data-i18n="background">Background</span>
+                        </button>
+                    </div>
+                    <div class="mask-status" id="mask-status" style="display:none;"></div>
+                    <div class="mask-controls" id="mask-controls">
+                        <div class="tools-list">
+                            <div class="tool-row"><div class="tool-meta"><span data-i18n="brightness">Brightness</span><span class="tool-value" id="mask-v-bright">0</span></div><button class="tool-btn" onclick="adjustMaskSlider('bright', -1)">−</button><input type="range" class="tool-slider" id="mask-bright" min="-100" max="100" value="0" oninput="onMaskSliderChange('bright')"><button class="tool-btn" onclick="adjustMaskSlider('bright', 1)">+</button></div>
+                            <div class="tool-row"><div class="tool-meta"><span data-i18n="contrast">Contrast</span><span class="tool-value" id="mask-v-contrast">0</span></div><button class="tool-btn" onclick="adjustMaskSlider('contrast', -1)">−</button><input type="range" class="tool-slider" id="mask-contrast" min="-100" max="100" value="0" oninput="onMaskSliderChange('contrast')"><button class="tool-btn" onclick="adjustMaskSlider('contrast', 1)">+</button></div>
+                            <div class="tool-row"><div class="tool-meta"><span data-i18n="saturation">Saturation</span><span class="tool-value" id="mask-v-sat">0</span></div><button class="tool-btn" onclick="adjustMaskSlider('sat', -1)">−</button><input type="range" class="tool-slider" id="mask-sat" min="-100" max="100" value="0" oninput="onMaskSliderChange('sat')"><button class="tool-btn" onclick="adjustMaskSlider('sat', 1)">+</button></div>
+                            <div class="tool-row"><div class="tool-meta"><span data-i18n="warmth">Warmth</span><span class="tool-value" id="mask-v-warmth">0</span></div><button class="tool-btn" onclick="adjustMaskSlider('warmth', -1)">−</button><input type="range" class="tool-slider" id="mask-warmth" min="-100" max="100" value="0" oninput="onMaskSliderChange('warmth')"><button class="tool-btn" onclick="adjustMaskSlider('warmth', 1)">+</button></div>
+                        </div>
+                        <div class="mask-actions">
+                            <button class="mask-btn primary" onclick="applyMaskEdit()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> <span data-i18n="apply">Apply</span></button>
+                            <button class="mask-btn danger" onclick="resetMaskEdit()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span data-i18n="reset">Reset</span></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Frame Panel ── -->
+            <div class="tab-section" id="p-fit-panel" style="display:none;">
+                <div class="panel-inner">
+                    <div class="frame-cats" id="frameCats" role="group" data-i18n-aria="ariaFrameCats" aria-label="Frame categories">
+                        <button class="frame-cat active" onclick="filterFrameCat('all',this)" data-i18n="all">All</button>
+                        <button class="frame-cat" onclick="filterFrameCat('minimal',this)" data-i18n="minimal">Minimal</button>
+                        <button class="frame-cat" onclick="filterFrameCat('polaroid',this)" data-i18n="polaroid">Polaroid</button>
+                        <button class="frame-cat" onclick="filterFrameCat('film',this)" data-i18n="film">Film</button>
+                        <button class="frame-cat" onclick="filterFrameCat('neon',this)" data-i18n="neon">Neon</button>
+                        <button class="frame-cat" onclick="filterFrameCat('luxury',this)" data-i18n="luxury">Luxury</button>
+                        <button class="frame-cat" onclick="filterFrameCat('gradient',this)" data-i18n="gradient">Gradient</button>
+                        <button class="frame-cat" onclick="filterFrameCat('social',this)" data-i18n="social">Social</button>
+                        <button class="frame-cat" onclick="filterFrameCat('rounded',this)" data-i18n="rounded">Rounded</button>
+                        <button class="frame-cat" onclick="filterFrameCat('vintage',this)" data-i18n="vintage">Vintage</button>
+                        <button class="frame-cat" onclick="filterFrameCat('clean',this)" data-i18n="clean">Clean</button>
+                    </div>
+                    <div class="frame-grid" id="frameGrid" role="group" data-i18n-aria="ariaFrameGrid" aria-label="Frames"></div>
+                    <div class="frame-divider"></div>
+                    <div class="frame-controls">
+                        <div class="frame-ctrl-row">
+                            <span class="frame-ctrl-lbl" data-i18n="thickness">Thickness</span>
+                            <input type="range" class="tool-slider" id="fc-thickness" min="0" max="60" value="20" oninput="onFrameControlChange('thickness')">
+                            <span class="frame-ctrl-val" id="fc-thickness-val">20</span>
+                        </div>
+                        <div class="frame-ctrl-row">
+                            <span class="frame-ctrl-lbl" data-i18n="radius">Radius</span>
+                            <input type="range" class="tool-slider" id="fc-radius" min="0" max="80" value="0" oninput="onFrameControlChange('radius')">
+                            <span class="frame-ctrl-val" id="fc-radius-val">0</span>
+                        </div>
+                        <div class="frame-ctrl-row">
+                            <span class="frame-ctrl-lbl" data-i18n="shadow">Shadow</span>
+                            <input type="range" class="tool-slider" id="fc-shadow" min="0" max="100" value="0" oninput="onFrameControlChange('shadow')">
+                            <span class="frame-ctrl-val" id="fc-shadow-val">0</span>
+                        </div>
+                        <div class="frame-ctrl-row">
+                            <span class="frame-ctrl-lbl" data-i18n="padding">Padding</span>
+                            <input type="range" class="tool-slider" id="fc-padding" min="0" max="40" value="0" oninput="onFrameControlChange('padding')">
+                            <span class="frame-ctrl-val" id="fc-padding-val">0</span>
+                        </div>
+                        <div class="frame-ctrl-row frame-color-row">
+                            <span class="frame-ctrl-lbl" data-i18n="frameColor">Color</span>
+                            <input type="color" class="frame-color-input" id="fc-color" value="#ffffff" oninput="onFrameColorChange()">
+                            <button type="button" class="frame-color-toggle" id="fc-color-toggle" aria-pressed="false" onclick="toggleFrameCustomColor()" data-i18n="off">Off</button>
+                            <button type="button" class="frame-reset-btn" onclick="resetFrameControls()" data-i18n="resetFrame">↺ Reset</button>
+                        </div>
+                        <p class="frame-color-note" id="fc-color-note" hidden data-i18n="frameColorUnavailable">Custom color isn’t available for this frame</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Magic Eraser ── (one compact row; all painting/AI output happens on the main canvas above) -->
+            <div class="tab-section" id="p-eraser" style="display:none;">
+                <div class="me-toolbar" role="toolbar" aria-label="Magic Eraser" data-i18n-aria="magicEraser">
+                    <!-- Row 1: brush size (fills the row) + utilities; destructive Clear is isolated at the far end -->
+                    <div class="me-row me-row-top">
+                        <label class="me-brush" for="me-brush-size" title="Brush Size" data-i18n-title="brushSize">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>
+                        <input type="range" class="me-slider" id="me-brush-size" min="8" max="140" value="40" aria-label="Brush Size" data-i18n-aria="brushSize" disabled>
+                    </label>
+                        <button class="me-btn icon" id="me-compare-hold" type="button" disabled title="Hold to Compare" aria-label="Hold to Compare" data-i18n-title="holdToCompare" data-i18n-aria="holdToCompare">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                        <button class="me-btn icon" id="me-download" type="button" onclick="magicEraserDownload()" disabled title="Download HD" aria-label="Download HD" data-i18n-title="downloadHD" data-i18n-aria="downloadHD">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </button>
+                        <span class="me-sep" aria-hidden="true"></span>
+                        <button class="me-btn icon danger" id="me-clear" type="button" onclick="magicEraserClear()" disabled title="Clear" aria-label="Clear" data-i18n-title="clear" data-i18n-aria="clear">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                    </button>
+                    </div>
+                    <!-- Row 2: Undo/Redo (left) + thumb-anchored primary action (right) -->
+                    <div class="me-row me-row-actions">
+                        <div class="me-history">
+                            <button class="me-btn icon" id="me-undo" type="button" onclick="magicEraserUndo()" disabled title="Undo" aria-label="Undo" data-i18n-title="undo2" data-i18n-aria="undo2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+                    </button>
+                            <button class="me-btn icon" id="me-redo" type="button" onclick="magicEraserRedo()" disabled title="Redo" aria-label="Redo" data-i18n-title="redo" data-i18n-aria="redo">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
+                    </button>
+                        </div>
+                        <button class="me-btn primary" id="me-apply" type="button" onclick="magicEraserApply()" disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.09 6.26L20 8.27l-5 4.36L16.18 20 12 16.77 7.82 20 9 12.63l-5-4.36 5.91.01L12 2z"/></svg>
+                        <span data-i18n="removeWithAI">Remove with AI</span>
+                    </button>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /panel-content -->
+
+        <!-- ── Bottom Navigation ── -->
+        <nav class="main-nav" data-i18n-aria="ariaMainNav" aria-label="Main navigation">
+            <button class="nav-tab active" onclick="switchMainNav('edit', this)">
+                <i><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></i>
+                <span data-i18n="navEdit">Edit</span>
+            </button>
+            <button class="nav-tab" onclick="switchMainNav('ai', this)">
+                <i><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></i>
+                <span data-i18n="navTools">Tools</span>
+            </button>
+            <button class="nav-tab" onclick="switchMainNav('fit', this)">
+                <i><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></i>
+                <span data-i18n="navFrame">Frame</span>
+            </button>
+            <button class="nav-tab" onclick="openSettingsPage()">
+                <i><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></i>
+                <span data-i18n="navSettings">Settings</span>
+            </button>
+        </nav>
+    </section>
+
+</div>
+
+<!-- ── Premium Modal ── -->
+<div class="modal-overlay" id="premiumModal" onclick="closePremiumModal(event)">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="premiumTitleText" tabindex="-1" onclick="event.stopPropagation()">
+        <button type="button" class="modal-close" id="premiumCloseBtn" onclick="closePremiumModal()" data-i18n-aria="ariaClose" aria-label="Close"><span aria-hidden="true">×</span></button>
+        <div class="modal-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <div class="modal-title" id="premiumTitleText" data-i18n="premiumTitle">YoFilter</div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;" data-i18n="premiumSubtitle">Unlock professional editing tools</p>
+        <div class="modal-price"><span data-i18n="premiumPrice">$4.99</span><span data-i18n="premiumPricePeriod">/month</span></div>
+        <ul class="modal-features">
+            <li data-i18n="premiumF1">Unlimited high-quality export</li>
+            <li data-i18n="premiumF2">Advanced subject isolation</li>
+            <li data-i18n="premiumF3">All premium filters and effects</li>
+            <li data-i18n="premiumF4">Batch editing and cloud sync</li>
+            <li data-i18n="premiumF5">No watermarks</li>
+        </ul>
+        <button class="modal-btn" onclick="showToast(window.t('toastComingSoon'), 'success')" data-i18n="upgradeNow">Upgrade</button>
+        <button class="modal-btn secondary" onclick="closePremiumModal()" data-i18n="later">Not Now</button>
+    </div>
+</div>
+
+<!-- ── Export Modal ── -->
+<div class="modal-overlay" id="exportModal" onclick="closeExportModal(event)">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="exportTitleText" aria-describedby="exportSubtitleText" tabindex="-1" onclick="event.stopPropagation()">
+        <button type="button" class="modal-close" id="exportCloseBtn" onclick="closeExportModal()" data-i18n-aria="ariaClose" aria-label="Close"><span aria-hidden="true">×</span></button>
+        <div class="modal-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></div>
+        <div class="modal-title" id="exportTitleText" data-i18n="exportTitle">Export Image</div>
+        <p class="modal-sub" id="exportSubtitleText" data-i18n="exportSubtitle">Choose a format. Photos export at editing resolution (up to 2560 px on the long edge).</p>
+        <button type="button" class="quality-btn" onclick="doExport('low')">
+            <span data-i18n="lowQuality">Small file (JPEG 60%)</span>
+            <span class="q-tag" data-i18n="lowQualityTag">Smallest file · some detail lost</span>
+        </button>
+        <button type="button" class="quality-btn" onclick="doExport('normal')">
+            <span data-i18n="normalQuality">Standard (JPEG 92%)</span>
+            <span class="q-tag" data-i18n="normalQualityTag">Balanced size and quality</span>
+        </button>
+        <button type="button" class="quality-btn ultra" onclick="doExport('ultra')">
+            <span data-i18n="ultraQuality">Lossless (PNG)</span>
+            <span class="q-tag" data-i18n="ultraQualityTag">No quality loss · largest file</span>
+        </button>
+        <button class="modal-btn secondary" onclick="closeExportModal()" style="margin-top:8px;" data-i18n="cancel">Cancel</button>
+    </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<!-- MediaPipe: loaded dynamically inside initializePortraitModel() -->
+
+<!-- ============================================================
+     JAVASCRIPT — load order: i18n → state → config → core → editing → overlays → portrait → ui → init → preset-store
+     ============================================================ -->
+
+<!-- V27: module registry - MUST be the first app script (every wrapped module calls YF.expose) -->
+<script src="./js/core/namespace.js" defer></script>
+<script src="./js/config/app-config.js" defer></script>
+<script src="./js/config/api-client.js" defer></script>
+<script src="./js/core/upload-compress.js" defer></script>
+
+<!-- i18n must be first so window.t() and window.applyI18n() are available -->
+<script src="./js/core/perf-utils.js" defer></script>
+<script src="./js/i18n/i18n.js" defer></script>
+<script src="./js/core/state.js" defer></script>
+<script src="./js/config/presets-data.js" defer></script>
+
+<script src="./js/core/render-pipeline.js" defer></script>
+<script src="./js/core/segmenter-service.js" defer></script>
+<script src="./js/core/webgl-renderer.js" defer></script>
+<script src="./js/core/file-handler.js" defer></script>
+<script src="./js/core/history.js" defer></script>
+<script src="./js/core/edge-model.js" defer></script>
+
+<script src="./js/editing/watermark.js" defer></script>
+<script src="./js/editing/presets.js" defer></script>
+<script src="./js/editing/color-mix.js" defer></script>
+<script src="./js/editing/curves.js" defer></script>
+<script src="./js/editing/sliders.js" defer></script>
+<script src="./js/editing/effects.js" defer></script>
+<script src="./js/editing/color-mix-apply.js" defer></script>
+<script src="./js/editing/ai-common.js" defer></script>
+<script src="./js/editing/ai-auto.js" defer></script>
+<script src="./js/editing/ai-mask.js" defer></script>
+<script src="./js/editing/erase-window.js" defer></script>
+<script src="./js/editing/magic-eraser.js" defer></script>
+<script src="./js/editing/bg-removal.js" defer></script>
+<script src="./js/editing/portrait-enhance.js" defer></script>
+<script src="./js/editing/crop.js" defer></script>
+<script src="./js/editing/fit-frame.js" defer></script>
+
+<script src="./js/overlays/overlay-manager.js" defer></script>
+
+<script defer src="./js/ui/save-image.js"></script>
+<script src="./js/ui/modals-export.js" defer></script>
+<script src="./js/ui/a11y.js" defer></script>
+<script src="./js/ui/navigation.js" defer></script>
+<script src="./js/ui/reset.js" defer></script>
+<script src="./js/ui/progress-counter.js" defer></script>
+<script src="./js/ui/loading-toast.js" defer></script>
+<script src="./js/ui/ai-loading-manager.js" defer></script>
+<script src="./js/ui/splash.js" defer></script>
+<script src="./js/ui/compare.js" defer></script>
+<script src="./js/ui/gestures.js" defer></script>
+
+<script src="./js/ui/edge-model-ui.js" defer></script>
+<script src="./js/portrait/portrait-math.js" defer></script>
+<script src="./js/portrait/edge-portrait.js" defer></script>
+<script src="./js/portrait/portrait-mode.js" defer></script>
+<script src="./js/core/init.js" defer></script>
+
+
+<!-- Startup language: restores the saved language (localStorage.yofilter_language) and applies i18n.
+     Must stay the LAST script: it needs state.js (currentLanguage), i18n.js (applyI18n). -->
+<script src="./js/core/startup-lang.js" defer></script>
+
+
+<!-- ============================================================
+     SETTINGS PAGE - full-screen dialog (styles: css/settings.css)
+     ============================================================ -->
+<div id="settingsPage" class="sheet-page" role="dialog" aria-modal="true" aria-labelledby="settingsHeading" aria-hidden="true">
+    <div class="sheet-inner">
+
+        <div class="sheet-header">
+            <button type="button" class="sheet-back" id="settingsBackBtn" onclick="closeSettingsPage()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+                <span data-i18n="back">Back</span>
+            </button>
+            <h2 class="sheet-title" id="settingsHeading" data-i18n="settingsTitle">Settings</h2>
+        </div>
+
+        <div class="sheet-card">
+            <div class="sheet-label" id="langLabel" data-i18n="language">Language</div>
+            <div class="options-row" role="group" aria-labelledby="langLabel">
+                <button type="button" class="opt-box active" aria-pressed="true" id="btn-lang-en" data-lang="en" lang="en" onclick="setLanguage('en')">English</button>
+                <button type="button" class="opt-box" aria-pressed="false" id="btn-lang-ar" data-lang="ar" lang="ar" onclick="setLanguage('ar')">العربية</button>
+            </div>
+        </div>
+
+        <div class="sheet-card">
+            <div class="sheet-switch-row">
+                <div class="sheet-switch-text">
+                    <div class="sheet-label" id="watermarkLabel" data-i18n="watermarkLabel">Add watermark on export</div>
+                    <p class="about-text" id="watermarkHint" data-i18n="watermarkHint">Adds a small “yf” mark to the bottom corner of exported photos.</p>
+                </div>
+                <button type="button" class="toggle-switch active" id="watermarkToggle" role="switch" aria-checked="true" aria-labelledby="watermarkLabel" aria-describedby="watermarkHint" onclick="toggleWatermarkSetting()"></button>
+            </div>
+        </div>
+
+        <div class="sheet-card">
+            <button type="button" class="sheet-row-btn" onclick="openAboutPage()">
+                <span data-i18n="aboutApp">About YoFilter</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+        </div>
+
+    </div>
+</div>
+
+
+<!-- ============================================================
+     ABOUT APP PAGE - full-screen dialog (sub-page of Settings)
+     ============================================================ -->
+<div id="aboutPage" class="sheet-page" role="dialog" aria-modal="true" aria-labelledby="aboutHeading" aria-hidden="true">
+    <div class="sheet-inner">
+
+        <div class="sheet-header">
+            <button type="button" class="sheet-back" id="aboutBackBtn" onclick="closeAboutPage()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+                <span data-i18n="back">Back</span>
+            </button>
+            <h2 class="sheet-title" id="aboutHeading" data-i18n="aboutTitle">About YoFilter</h2>
+        </div>
+
+        <div class="sheet-card center about-section">
+            <div class="about-logo" aria-hidden="true">YF</div>
+            <div class="about-name" data-i18n="appName">YoFilter</div>
+            <div class="about-version" data-i18n="appVersion">Version 1.0.0</div>
+            <p class="about-desc" data-i18n="appDescription">YoFilter is an AI-powered photo studio with professional-grade tools, right in your browser. Edit, enhance and transform your photos with ease.</p>
+        </div>
+
+        <div class="sheet-card about-section">
+            <div class="sheet-card-title mb12" data-i18n="keyFeatures">Key Features</div>
+            <ul class="feature-list">
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature1">AI background removal and Portrait mode</span></li>
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature2">Magic Eraser to remove unwanted objects</span></li>
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature3">Advanced filters, presets and color grading</span></li>
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature4">Smart auto-enhance</span></li>
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature5">Frame studio with 50+ professional frames</span></li>
+                <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg><span data-i18n="feature6">Most tools work offline. Magic Eraser and Portrait need the AI server.</span></li>
+            </ul>
+        </div>
+
+        <div class="sheet-card about-section">
+            <div class="sheet-kv">
+                <span class="sheet-k" data-i18n="developer">Developer</span>
+                <span class="sheet-v" data-i18n="developerName">Yassen Mohammed</span>
+            </div>
+            <div class="sheet-kv">
+                <span class="sheet-k" data-i18n="contactEmail">Contact Email</span>
+                <a class="sheet-link" href="mailto:mmyasomm@gmail.com" data-i18n="contactEmailVal">mmyasomm@gmail.com</a>
+            </div>
+        </div>
+
+        <div class="sheet-card about-section">
+            <div class="sheet-card-title" data-i18n="privacyPolicy">Privacy Policy</div>
+            <p class="about-text" data-i18n="privacyPolicyText">Your privacy matters. Filters, presets, curves, color mix, crop, frames, background removal, AI masks and face enhance are processed on your device. Two features send the photo you are editing to the YoFilter AI server over the internet: Magic Eraser (the photo and the area you painted) and Portrait (the photo and your blur / skin settings). The server uses them only to create the result and returns it; the server software keeps them in memory and does not save your photos to disk. It may log technical details such as time, file size and IP address, never the photo itself. Background removal and AI masks run on your device but download their AI model from a public CDN the first time, unless the model is bundled with the app. We do not ask for an account or collect personal data. Exported photos are saved only on your device.</p>
+        </div>
+
+        <div class="sheet-card about-section">
+            <div class="sheet-card-title" data-i18n="termsOfService">Terms of Service</div>
+            <p class="about-text" data-i18n="termsText">By using YoFilter, you agree to use the app in accordance with applicable laws. You keep full ownership of every image you edit. The app is provided “as is”, without warranty of any kind.</p>
+        </div>
+
+        <div class="sheet-card last about-section">
+            <div class="sheet-card-title" data-i18n="openSourceLicenses">Open Source Licenses</div>
+            <p class="about-text" data-i18n="licensesText">YoFilter uses the following open-source technologies: MediaPipe (Apache 2.0) — AI segmentation models. Google Fonts (SIL Open Font License) — Inter, Tajawal and Noto Sans Arabic typefaces.</p>
+        </div>
+
+    </div>
+</div>
+
+
+</body>
+</html>

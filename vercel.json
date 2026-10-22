@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{tests/**,docs/**,scripts/**,.github/**,node_modules/**,test-results/**,playwright-report/**,backend/models/**,**/*.onnx,**/*.part,**/__pycache__/**,**/*.pyc,config.xml,package.json,playwright.config.js,pytest.ini,requirements-dev.txt,README.md}"
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}

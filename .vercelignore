@@ -1,0 +1,10 @@
+# Keeps `vercel deploy` uploads small (git-based deployments clone the repo instead). Models are downloaded at runtime.
+backend/models/*.onnx
+node_modules
+tests
+test-results
+playwright-report
+docs
+.github
+__pycache__
+*.pyc

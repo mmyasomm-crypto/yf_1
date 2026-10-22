@@ -1,0 +1,22 @@
+# YoFilter API - runtime dependencies (Vercel Python runtime + local development).
+# Vercel installs this file at build time; the whole function (these packages + the app files) must stay under 500 MB
+# uncompressed. The ~190 MB ONNX models are NOT part of it: they are downloaded into /tmp/yofilter-models on first use.
+
+fastapi>=0.115,<1
+# Local `uvicorn backend.app.main:app` only - Vercel runs the ASGI app itself.
+uvicorn>=0.30,<1
+# Required by FastAPI for the File(...) / Form(...) upload endpoints (/api/erase, /api/portrait): the app fails to import without it.
+python-multipart>=0.0.9,<1
+
+# Windows (local GPU: AMD/Intel/NVIDIA via DirectX 12) gets the DirectML build, which also contains the CPU provider.
+# Every other platform - including Vercel (Linux) - uses plain CPU. Install only ONE of onnxruntime / onnxruntime-directml.
+onnxruntime-directml>=1.18,<2; sys_platform == "win32"
+onnxruntime>=1.18,<2; sys_platform != "win32"
+
+numpy>=1.26,<3
+Pillow>=10,<13
+# headless build: no GUI libraries, much smaller than opencv-python
+opencv-python-headless>=4.9,<5
+
+# Downloads the ONNX models from Hugging Face (ertegfg/yofilter-models) when they are not on disk.
+huggingface-hub>=0.24,<2
